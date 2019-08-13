@@ -8,7 +8,7 @@ import (
 	"log"
 )
 
-func Credential_config(cred_path, region, cred_account string) *ec2.EC2 {
+func CredentialConfig(cred_path, region, cred_account string) *ec2.EC2 {
 	// Default settings
 	if cred_account == "" {
 		cred_account = "openshift-dev"
@@ -21,23 +21,33 @@ func Credential_config(cred_path, region, cred_account string) *ec2.EC2 {
 		Region:      aws.String(region),
 	}))
 	svc := ec2.New(sess, aws.NewConfig())
-
-	list_vpc(svc)
 	return svc
 }
 
-func list_vpc(svc *ec2.EC2){
+func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string, error) {
 	//filter:
 	//             "State": "available",
 	//
-	res, err := svc.DescribeVpcs(nil)
+	res, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
+		Filters: []*ec2.Filter{
+			{
+				Name:   aws.String("tag:Name"),
+				Values: aws.StringSlice([]string{infrastructureName + "-vpc"}),
+			},
+			{
+				Name:   aws.String("state"),
+				Values: aws.StringSlice([]string{"available"}),
+			},
+		},
+	})
 	if err != nil {
 		log.Panicf("Unable to describe VPCs, %v", err)
 	}
 	if len(res.Vpcs) == 0 {
-		log.Panicf("No VPCs found to associate security group with.")
+		log.Panicf("No VPCs found.")
+		return "", err
+	} else if len(res.Vpcs) > 1 {
+		log.Panicf("More than one VPCs are found, we returned the first one")
 	}
-	for _, vpc :=range res.Vpcs {
-		println(*vpc.VpcId)
-	}
+	return *res.Vpcs[0].VpcId, err
 }
