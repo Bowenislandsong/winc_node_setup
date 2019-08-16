@@ -69,3 +69,6 @@ network_closure.sh
 # Version file for dockerized build
 .dockerized-kube-version-defs
 
+# Using go mod, we do not need to update vendor folder
+/vendor
+

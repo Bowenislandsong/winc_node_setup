@@ -5,7 +5,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/openshift/cloud-credential-operator/pkg/controller/utils"
 	"log"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/config"
 )
 
 func CredentialConfig(cred_path, region, cred_account string) *ec2.EC2 {
@@ -25,9 +28,6 @@ func CredentialConfig(cred_path, region, cred_account string) *ec2.EC2 {
 }
 
 func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string, error) {
-	//filter:
-	//             "State": "available",
-	//
 	res, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{
 			{
@@ -50,4 +50,15 @@ func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string
 		log.Panicf("More than one VPCs are found, we returned the first one")
 	}
 	return *res.Vpcs[0].VpcId, err
+}
+
+// create openshift Client
+func ConfigOpenShift() (client.Client, error) {
+	c := config.GetConfigOrDie()
+	return client.New(c, client.Options{})
+}
+
+// get infraID
+func GetInfrastrctureName(c client.Client) (string, error) {
+	return utils.LoadInfrastructureName(c, nil)
 }

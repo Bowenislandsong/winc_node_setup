@@ -11,13 +11,13 @@ import (
 func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 
 	if imageId == "" {
-		imageId = "ami-04ca2d0801450d495"
+		imageId = "ami-04ca2d0801450d495" // windows server 2019
 	}
 	if instanceType == "" {
-		instanceType = "t2.micro"
+		instanceType = "t2.micro" // free tier
 	}
 	if keyName == "" {
-		keyName = "libra"
+		keyName = "libra" // use libra.pem
 	}
 	// create a subnet based on vpcID
 	var subnetID string
@@ -54,7 +54,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 	sg, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String("bsong-winc-node"),
 		Description: aws.String("security group for rdp and all traffic"),
-		VpcId:aws.String(vpcID),
+		VpcId:       aws.String(vpcID),
 	})
 	if err != nil {
 		log.Fatalf("Could not create Security Group: %v", err)
@@ -76,7 +76,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 	}
 
 	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId:aws.String(*sg.GroupId),
+		GroupId: aws.String(*sg.GroupId),
 		IpPermissions: []*ec2.IpPermission{
 			//(&ec2.IpPermission{}).
 			//	SetIpProtocol("-1").

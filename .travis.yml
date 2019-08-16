@@ -1,0 +1,10 @@
+language: go
+
+go:
+  - 1.11
+
+install:
+  - export PATH=$GOPATH/bin:./_output/tools/etcd/bin:$PATH
+  - make install-travis
+run:
+  - glide up -v
