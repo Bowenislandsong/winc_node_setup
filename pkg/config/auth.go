@@ -5,11 +5,10 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/openshift/cloud-credential-operator/pkg/controller/utils"
 	"log"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/config"
+	"os/exec"
 )
+
 
 func CredentialConfig(cred_path, region, cred_account string) *ec2.EC2 {
 	// Default settings
@@ -52,13 +51,30 @@ func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string
 	return *res.Vpcs[0].VpcId, err
 }
 
-// create openshift Client
-func ConfigOpenShift() (client.Client, error) {
-	c := config.GetConfigOrDie()
-	return client.New(c, client.Options{})
+// Bash way of extracting infraID
+// TODO: find out how to use LoadInfrastructureName (problem is to match the versions of library)
+func GetInfraID() (string, error) {
+	out, err := exec.Command("bash", "-c", "oc get infrastructure -o yaml | grep infrastructureName").Output()
+	if err != nil || len(out)==0 {
+		return "", err
+	}
+
+	return string(out[24:len(out)-1]), nil
 }
 
-// get infraID
-func GetInfrastrctureName(c client.Client) (string, error) {
-	return utils.LoadInfrastructureName(c, nil)
-}
+//// create openshift Client
+//func ConfigOpenShift() (client.Client, error) {
+//	c := config.GetConfigOrDie()
+//	return client.New(c, client.Options{})
+//}
+//
+//// get infraID
+//func GetInfrastrctureName(c client.Client) (string, error) {
+//	infra := &configv1.Infrastructure{}
+//	err := c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, infra)
+//	if err !=nil{
+//		print(err.Error())
+//	}
+//	return infra.Status.InfrastructureName, nil
+//	//return utils.LoadInfrastructureName(c, logrus.New())
+//}
