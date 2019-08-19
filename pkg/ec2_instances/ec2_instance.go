@@ -110,8 +110,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 		log.Println("Could not create tags for instance", runResult.Instances[0].InstanceId, err)
 		return
 	}
-
-	log.Println("Successfully tagged instance")
+	log.Println("Successfully created windows node instance")
 }
 
 func getMyIp() string {
