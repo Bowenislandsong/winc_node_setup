@@ -100,7 +100,7 @@ func GetInfrastrctureName(c *restclient.Config)string{
 		log.Fatalf("Error conveting rest client into versioned client, %v",err)
 	}
 	configinformer:=configinformers.NewSharedInformerFactory(client, 0).Config().V1().Infrastructures().Lister()
-	res, err:= configinformer.Get("Infrastructure")
+	res, err:= configinformer.Get("namespace")
 	if err !=nil{
 		log.Fatalf("Error getting stuff, %v",err)
 	}

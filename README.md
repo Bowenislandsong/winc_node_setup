@@ -6,12 +6,16 @@ Have an openshift cluster running on AWS.
 configure aws and KUBECONFIG
 
 ## What it does
-grab vpc name 
 create windows container node (win server 2019) under the vpc
-properties:
- - name
- - public IP (subnet)
- - security group (secure public IP RDP, Ansible, 10.x/16)
+1. grab vpc name 
+2. assign properties:
+    - name
+    - public IP (subnet)
+    - security group (secure public IP RDP, Ansible, 10.x/16)
+
+Destroy Winows node
+1. destroy VM
+2. delete security group
 
 ## output
 A way to rdp inside of <user>-winc-node
