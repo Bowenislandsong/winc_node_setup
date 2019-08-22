@@ -7,12 +7,17 @@ configure aws and KUBECONFIG
 
 ## What it does
 create windows container node (win server 2019) under the vpc
-1. grab vpc name 
-2. assign properties:
-    - name
-    - public IP (subnet)
-    - security group (secure public IP RDP, Ansible, 10.x/16)
-
+1. grab openshift Cluster vpc name 
+2. Windows Node properties:
+    - Node Name \<kerborse\>-winc
+    - A m4.large instance
+    - Shared vpc with OpenShift Cluster
+    - Public Subnet (within the vpc)
+    - Auto-assign Public IP
+    - Using shared libra key
+    - security group (secure public IP RDP with my IP and 10.x/16)
+    - Attach IAM role (Openshift Cluster Worker Profile)
+    - Attach Security Group (Openshift Cluster - Worker)
 Destroy Winows node
 1. destroy VM
 2. delete security group
