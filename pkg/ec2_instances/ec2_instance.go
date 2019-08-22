@@ -14,7 +14,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 		imageId = "ami-04ca2d0801450d495" // windows server 2019
 	}
 	if instanceType == "" {
-		instanceType = "m4.large" // free tier
+		instanceType = "m4.large" 
 	}
 	if keyName == "" {
 		keyName = "libra" // use libra.pem

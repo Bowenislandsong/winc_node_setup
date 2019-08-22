@@ -2,11 +2,19 @@
 Set up windows node and connect to openshift cluster.
 
 ## pre-requisite
-Have an openshift cluster running on AWS.
-configure aws and KUBECONFIG
+- An existing openshift cluster running on AWS.
+- AWS EC2 credentials (aws_access_key_id and aws_access_key_id)
+- kubeconfig of OpenShift Cluster
 
 ## What it does
-create windows container node (win server 2019) under the vpc
+create windows container node (win server 2019) under the same vpc as OpenShift Cluster
+```bash
+winc-setup create
+    --vpcid
+    --key Default libra
+    --Region Default us-east-1
+```
+
 1. grab openshift Cluster vpc name 
 2. Windows Node properties:
     - Node Name \<kerborse\>-winc
@@ -18,12 +26,13 @@ create windows container node (win server 2019) under the vpc
     - security group (secure public IP RDP with my IP and 10.x/16)
     - Attach IAM role (Openshift Cluster Worker Profile)
     - Attach Security Group (Openshift Cluster - Worker)
-Destroy Winows node
+3. Output a way to rdp inside of Windows node
+```bash
+winc-setup destroy
+```
 1. destroy VM
 2. delete security group
 
-## output
-A way to rdp inside of <user>-winc-node
 
 ## V2 (future work) Ansible
 - filewall
