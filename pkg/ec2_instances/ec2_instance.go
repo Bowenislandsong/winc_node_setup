@@ -14,7 +14,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 		imageId = "ami-04ca2d0801450d495" // windows server 2019
 	}
 	if instanceType == "" {
-		instanceType = "t2.micro" // free tier
+		instanceType = "m4.large" 
 	}
 	if keyName == "" {
 		keyName = "libra" // use libra.pem
@@ -110,8 +110,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, imageId, instanceType, keyName string) {
 		log.Println("Could not create tags for instance", runResult.Instances[0].InstanceId, err)
 		return
 	}
-
-	log.Println("Successfully tagged instance")
+	log.Println("Successfully created windows node instance")
 }
 
 func getMyIp() string {
