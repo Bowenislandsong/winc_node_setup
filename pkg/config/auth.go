@@ -7,18 +7,13 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
-	apiconfigv1 "github.com/openshift/api/config/v1"
-	configver "github.com/openshift/client-go/config/clientset/versioned"
-	configinformers "github.com/openshift/client-go/config/informers/externalversions"
-	occonfig "github.com/openshift/client-go/config/listers/config/v1"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	restclient "k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/cache"
+	v1 "github.com/openshift/api/config/v1"
+	client "github.com/openshift/client-go/config/clientset/versioned"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	_ "k8s.io/client-go/tools/clientcmd"
 	"log"
 	"os"
-	"os/exec"
 )
 
 func contains(slice *[]interface{}, item *interface{}) bool {
@@ -44,12 +39,12 @@ func AWSConfig() *ec2.EC2 {
 	return svc
 }
 
-func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string, error) {
+func GetVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, error) {
 	res, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{
 			{
 				Name:   aws.String("tag:Name"),
-				Values: aws.StringSlice([]string{infrastructureName + "-vpc"}),
+				Values: aws.StringSlice([]string{infra.Status.InfrastructureName + "-vpc"}), //TODO: use this kubernetes.io/cluster/{infraName}: owned
 			},
 			{
 				Name:   aws.String("state"),
@@ -71,50 +66,35 @@ func GetVPCByInfrastructureName(svc *ec2.EC2, infrastructureName string) (string
 
 // get aws instance id
 
-// Bash way of extracting infraID
-// TODO: find out how to use LoadInfrastructureName (problem is to match the versions of library)
-func GetInfraID() (string, error) {
-	out, err := exec.Command("bash", "-c", "oc get infrastructure -o yaml | grep infrastructureName").Output()
-	if err != nil || len(out) == 0 {
-		return "", err
-	}
-	return string(out[24 : len(out)-1]), nil
-}
 
 // TODO: consult https://github.com/openshift/cluster-kube-scheduler-operator/blob/master/pkg/operator/configobservation/configobservercontroller/observe_config_controller.go#L49 using informer
-// create openshift Client
-func ConfigOpenShift() (*restclient.Config, error) {
-	kubeconfig := flag.String("kubeconfig", os.Getenv("HOME")+"/.kube/kubeconfig", "absolute path to the kubeconfig file")
+// Return openshift Client
+func ConfigOpenShift() (*client.Clientset, error) {
+	kubeConfig := flag.String("kubeconfig", os.Getenv("HOME")+"/.kube/kubeconfig", "absolute path to the kubeconfig file")
 	flag.Parse()
-	println(*kubeconfig)
-	c, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	log.Println("kubeconfig source: ", *kubeConfig)
+	c, err := clientcmd.BuildConfigFromFlags("", *kubeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from kubeconfig, %v", err)
 	}
-	return c, nil
+	ocClient, err := client.NewForConfig(c)
+	if err != nil {
+		log.Fatalf("Error conveting rest client into OpenShift versioned client, %v", err)
+	}
+	thing,_:=ocClient.ConfigV1().Images().List(metav1.ListOptions{})
+	println(thing)
+	return ocClient, nil
 }
 
-func GetInfrastrctureName(c *restclient.Config)string{
-	client,err := configver.NewForConfig(c)
-	if err !=nil{
-		log.Fatalf("Error conveting rest client into versioned client, %v",err)
-	}
-	configinformer:=configinformers.NewSharedInformerFactory(client, 0).Config().V1().Infrastructures().Lister()
-	res, err:= configinformer.Get("namespace")
-	if err !=nil{
-		log.Fatalf("Error getting stuff, %v",err)
-	}
-	println(res.Status.InfrastructureName)
-	indexer := cache.NewIndexer(cache.MetaNamespaceKeyFunc, cache.Indexers{})
-	if err := indexer.Add(&apiconfigv1.Infrastructure{ObjectMeta: v1.ObjectMeta{Name: "cluster"}, }); err != nil {
-		log.Fatal(err.Error())
-	}
+func GetInfrastrcture(c *client.Clientset) v1.Infrastructure {
 
-	a, err := occonfig.NewInfrastructureLister(indexer).Get("infraid")
-	println(err.Error())
-	print(a)
-	return ""
+	infra, err := c.ConfigV1().Infrastructures().List(metav1.ListOptions{})
+	if err != nil || infra == nil || len(infra.Items) != 1 {
+		log.Fatalf("Error getting infrastructure, %v", err)
+	}
+	return infra.Items[0]
 }
+
 //func ConfigOpenShift() (client.Client, error) {
 //	c := config.GetConfigOrDie()
 //	return client.New(c, client.Options{})

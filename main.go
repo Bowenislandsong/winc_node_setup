@@ -12,8 +12,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get client, %v", err)
 	}
-	infraID := config.GetInfrastrctureName(client)
-	vpcID, err := config.GetVPCByInfrastructureName(svc, infraID)
+	infra := config.GetInfrastrcture(client)
+	vpcID, err := config.GetVPCByInfrastructure(svc, infra)
 	if err != nil {
 		log.Fatalf("We failed to find our vpc, %v", err)
 	}
