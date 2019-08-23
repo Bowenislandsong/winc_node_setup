@@ -12,10 +12,10 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get client, %v", err)
 	}
-	infra := config.GetInfrastrcture(client)
-	vpcID, err := config.GetVPCByInfrastructure(svc, infra)
+	infra := ec2_instances.GetInfrastrcture(client)
+	vpcID, err := ec2_instances.GetVPCByInfrastructure(svc, infra)
 	if err != nil {
 		log.Fatalf("We failed to find our vpc, %v", err)
 	}
-	ec2_instances.CreateEC2WinC(svc, vpcID, "", "", "")
+	ec2_instances.CreateEC2WinC(svc, vpcID, infra.Status.InfrastructureName, "", "", "")
 }
