@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/iam"
 	v1 "github.com/openshift/api/config/v1"
 	client "github.com/openshift/client-go/config/clientset/versioned"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -14,7 +15,7 @@ import (
 	"net/http"
 )
 
-func CreateEC2WinC(svc *ec2.EC2, vpcID, infraID, imageId, instanceType, keyName string) {
+func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, instanceType, keyName string) {
 
 	if imageId == "" {
 		imageId = "ami-0943eb2c39917fc11" // Default using Aravindh's firewall disabled image (Does not always have firewall disabled) AWS windows server 2019 is ami-04ca2d0801450d495
@@ -26,10 +27,11 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, infraID, imageId, instanceType, keyName 
 		keyName = "libra" // use libra.pem
 	}
 	workerSG := getClusterSGID(svc, infraID, "worker")
+	iamprofile := getIAMrole(svcIAM, infraID, "worker")
 
 	subnetID, err := getPubSubnetOrCreate(svc, vpcID, infraID)
 	sg, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String(infraID + "winc-sg"),
+		GroupName:   aws.String(infraID + "-winc-sg"),
 		Description: aws.String("security group for rdp and all traffic"),
 		VpcId:       aws.String(vpcID),
 	})
@@ -38,21 +40,20 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, infraID, imageId, instanceType, keyName 
 	}
 	// Specify the details of the instance
 	runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
-		ImageId:          aws.String(imageId),
-		InstanceType:     aws.String(instanceType),
-		KeyName:          aws.String(keyName),
-		SubnetId:         aws.String(subnetID),
-		MinCount:         aws.Int64(1),
-		MaxCount:         aws.Int64(1),
-		iam
-		SecurityGroupIds: []*string{aws.String(*sg.GroupId), aws.String(workerSG)},
+		ImageId:            aws.String(imageId),
+		InstanceType:       aws.String(instanceType),
+		KeyName:            aws.String(keyName),
+		SubnetId:           aws.String(subnetID),
+		MinCount:           aws.Int64(1),
+		MaxCount:           aws.Int64(1),
+		IamInstanceProfile: iamprofile,
+		SecurityGroupIds:   []*string{aws.String(*sg.GroupId), aws.String(workerSG)},
 	})
 	if err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	} else {
 		log.Println("Created instance", *runResult.Instances[0].InstanceId)
 	}
-
 	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: aws.String(*sg.GroupId),
 		IpPermissions: []*ec2.IpPermission{
@@ -81,7 +82,7 @@ func CreateEC2WinC(svc *ec2.EC2, vpcID, infraID, imageId, instanceType, keyName 
 		Tags: []*ec2.Tag{
 			{
 				Key:   aws.String("Name"),
-				Value: aws.String("winc-node"),
+				Value: aws.String(infraID + "-winNode"),
 			},
 		},
 	})
@@ -197,21 +198,14 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 	return *sg.SecurityGroups[0].GroupId
 }
 
-func getIAMrole(svc *ec2.EC2, infraID, clusterFunction string) ec2.IamInstanceProfile {
-	iams, err:=svc.DescribeIamInstanceProfileAssociations(&ec2.DescribeIamInstanceProfileAssociationsInput{
-		Filters:[]*ec2.Filter{
-			{
-				Name:   aws.String("tag:Name"),
-				Values: aws.StringSlice([]string{infraID + "-" + clusterFunction + "-role"}),
-			},
-			{
-				Name:   aws.String("tag:kubernetes.io/cluster/" + infraID),
-				Values: aws.StringSlice([]string{"owned"}),
-			},
-		},
+func getIAMrole(svcIAM *iam.IAM, infraID, clusterFunction string) *ec2.IamInstanceProfileSpecification {
+	iamspc, err := svcIAM.GetInstanceProfile(&iam.GetInstanceProfileInput{
+		InstanceProfileName: aws.String(fmt.Sprintf("%s-%s-profile",infraID,clusterFunction)),
 	})
-	if err!=nil{
-		log.Panicf("failed to find iam role, please attache manually")
+	if err != nil {
+		log.Panicf("failed to find iam role, please attache manually %v", err)
 	}
-	return *iams.IamInstanceProfileAssociations[0].IamInstanceProfile
+	return &ec2.IamInstanceProfileSpecification{
+		Name: iamspc.InstanceProfile.InstanceProfileName,
+	}
 }

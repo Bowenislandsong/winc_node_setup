@@ -7,6 +7,7 @@ import (
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
+	"github.com/aws/aws-sdk-go/service/iam"
 	client "github.com/openshift/client-go/config/clientset/versioned"
 	"k8s.io/client-go/tools/clientcmd"
 	_ "k8s.io/client-go/tools/clientcmd"
@@ -22,7 +23,7 @@ func contains(slice *[]interface{}, item *interface{}) bool {
 	}
 	return false
 }
-func AWSConfig() *ec2.EC2 {
+func AWSConfig() (*ec2.EC2, *iam.IAM) {
 	// Grab settings from flag values
 	// TODO: Default values may contain redhat information (consider removing default values before public facing)
 	credPath := flag.String("awsconfig", os.Getenv("HOME")+"/.aws/credentials", "Get absolute path of aws credentials")
@@ -34,7 +35,8 @@ func AWSConfig() *ec2.EC2 {
 		Region:      aws.String(*region),
 	}))
 	svc := ec2.New(sess, aws.NewConfig())
-	return svc
+	svcIam:=iam.New(sess, aws.NewConfig())
+	return svc, svcIam
 }
 
 // get aws instance id

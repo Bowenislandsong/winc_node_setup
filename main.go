@@ -7,7 +7,7 @@ import (
 )
 
 func main() {
-	svc := config.AWSConfig()
+	svc, svcIAM := config.AWSConfig()
 	client, err := config.ConfigOpenShift()
 	if err != nil {
 		log.Fatalf("Failed to get client, %v", err)
@@ -17,5 +17,5 @@ func main() {
 	if err != nil {
 		log.Fatalf("We failed to find our vpc, %v", err)
 	}
-	ec2_instances.CreateEC2WinC(svc, vpcID, infra.Status.InfrastructureName, "", "", "")
+	ec2_instances.CreateEC2WinC(svc, svcIAM, vpcID, infra.Status.InfrastructureName, "", "", "")
 }
