@@ -6,8 +6,6 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/ec2"
-	"github.com/aws/aws-sdk-go/service/iam"
 	client "github.com/openshift/client-go/config/clientset/versioned"
 	"k8s.io/client-go/tools/clientcmd"
 	_ "k8s.io/client-go/tools/clientcmd"
@@ -15,15 +13,7 @@ import (
 	"os"
 )
 
-func contains(slice *[]interface{}, item *interface{}) bool {
-	for i := range *slice {
-		if (*slice)[i] == *item {
-			return true
-		}
-	}
-	return false
-}
-func AWSConfig() (*ec2.EC2, *iam.IAM) {
+func AWSConfigSess() *session.Session {
 	// Grab settings from flag values
 	// TODO: Default values may contain redhat information (consider removing default values before public facing)
 	credPath := flag.String("awsconfig", os.Getenv("HOME")+"/.aws/credentials", "Get absolute path of aws credentials")
@@ -34,16 +24,14 @@ func AWSConfig() (*ec2.EC2, *iam.IAM) {
 		Credentials: credentials.NewSharedCredentials(*credPath, *credAccount),
 		Region:      aws.String(*region),
 	}))
-	svc := ec2.New(sess, aws.NewConfig())
-	svcIam:=iam.New(sess, aws.NewConfig())
-	return svc, svcIam
+	return sess
 }
 
 // get aws instance id
 
 // TODO: consult https://github.com/openshift/cluster-kube-scheduler-operator/blob/master/pkg/operator/configobservation/configobservercontroller/observe_config_controller.go#L49 using informer
 // Return openshift Client
-func ConfigOpenShift() (*client.Clientset, error) {
+func OpenShiftConfig() (*client.Clientset, error) {
 	kubeConfig := flag.String("kubeconfig", os.Getenv("HOME")+"/.kube/kubeconfig", "absolute path to the kubeconfig file")
 	flag.Parse()
 	log.Println("kubeconfig source: ", *kubeConfig)

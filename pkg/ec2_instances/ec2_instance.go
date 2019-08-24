@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/iam"
 	v1 "github.com/openshift/api/config/v1"
@@ -15,10 +16,12 @@ import (
 	"net/http"
 )
 
-func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, instanceType, keyName string) {
-
+func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, instanceType, keyName string) {
+	svc := ec2.New(sess, aws.NewConfig())
+	svcIAM := iam.New(sess, aws.NewConfig())
+	var sgID, instanceID *string
 	if imageId == "" {
-		imageId = "ami-0943eb2c39917fc11" // Default using Aravindh's firewall disabled image (Does not always have firewall disabled) AWS windows server 2019 is ami-04ca2d0801450d495
+		imageId = "ami-04ca2d0801450d495" // Default using Aravindh's firewall disabled image ami-0943eb2c39917fc11 (Does not always have firewall disabled) AWS windows server 2019 is ami-04ca2d0801450d495
 	}
 	if instanceType == "" {
 		instanceType = "m4.large"
@@ -26,9 +29,20 @@ func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, insta
 	if keyName == "" {
 		keyName = "libra" // use libra.pem
 	}
+	// get infrastructure from OC using kubeconfig info
+	infra := getInfrastrcture(clientset)
+	// get infraID an unique readable id for the infrastructure
+	infraID := infra.Status.InfrastructureName
+	// get vpc id of the openshift cluster
+	vpcID, err := getVPCByInfrastructure(svc, infra)
+	if err != nil {
+		log.Fatalf("We failed to find our vpc, %v", err)
+	}
+	// get openshift cluster worker security groupID
 	workerSG := getClusterSGID(svc, infraID, "worker")
-	iamprofile := getIAMrole(svcIAM, infraID, "worker")
-
+	// get openshift cluster worker iam profile
+	iamprofile := getIAMrole(svcIAM, infraID, "worker") // unnecessary, could just rely on naming convention to set the iam specifics
+	// get or create a public subnet under the vpcID
 	subnetID, err := getPubSubnetOrCreate(svc, vpcID, infraID)
 	sg, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
 		GroupName:   aws.String(infraID + "-winc-sg"),
@@ -36,7 +50,25 @@ func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, insta
 		VpcId:       aws.String(vpcID),
 	})
 	if err != nil {
-		log.Fatalf("Could not create Security Group: %v", err)
+		log.Printf("could not create Security Group, attaching existing instead: %v", err)
+		sgs, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
+			Filters: []*ec2.Filter{
+				{
+					Name:   aws.String("vpc-id"),
+					Values: aws.StringSlice([]string{vpcID}),
+				},
+				{
+					Name:   aws.String("group-name"),
+					Values: aws.StringSlice([]string{infraID + "-winc-sg"}),
+				},
+			},
+		})
+		if err != nil || sgs == nil || len(sgs.SecurityGroups) == 0 {
+			log.Fatalf("failed to crate or find security group, %v", err)
+		}
+		sgID = sgs.SecurityGroups[0].GroupId
+	} else {
+		sgID = sg.GroupId
 	}
 	// Specify the details of the instance
 	runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
@@ -47,15 +79,31 @@ func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, insta
 		MinCount:           aws.Int64(1),
 		MaxCount:           aws.Int64(1),
 		IamInstanceProfile: iamprofile,
-		SecurityGroupIds:   []*string{aws.String(*sg.GroupId), aws.String(workerSG)},
+
+		SecurityGroupIds: []*string{sgID, aws.String(workerSG)},
 	})
 	if err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	} else {
-		log.Println("Created instance", *runResult.Instances[0].InstanceId)
+		instanceID = runResult.Instances[0].InstanceId
+		log.Println("Created instance", *instanceID)
+	}
+	ipID := allocatePublicIp(svc)
+	err = svc.WaitUntilInstanceStatusOk(&ec2.DescribeInstanceStatusInput{
+		InstanceIds: []*string{instanceID},
+	})
+	if err != nil {
+		log.Printf("failed to wait for instance to be ok, %v", err)
+	}
+	_, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
+		AllocationId: ipID,
+		InstanceId:   instanceID,
+	})
+	if err != nil {
+		log.Printf("failed to associate public ip for instance, %v", err)
 	}
 	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
-		GroupId: aws.String(*sg.GroupId),
+		GroupId: sgID,
 		IpPermissions: []*ec2.IpPermission{
 			(&ec2.IpPermission{}).
 				SetIpProtocol("-1").
@@ -74,7 +122,7 @@ func CreateEC2WinC(svc *ec2.EC2, svcIAM *iam.IAM, vpcID, infraID, imageId, insta
 		},
 	})
 	if err != nil {
-		log.Println("Unable to set security group ingress, %v", err)
+		log.Printf("unable to set security group ingress, %v", err)
 	}
 	// Add tags to the created instance
 	_, err = svc.CreateTags(&ec2.CreateTagsInput{
@@ -107,7 +155,15 @@ func getMyIp() string {
 	return buf.String()
 }
 
-func GetInfrastrcture(c *client.Clientset) v1.Infrastructure {
+func allocatePublicIp(svc *ec2.EC2) *string {
+	ip, err := svc.AllocateAddress(&ec2.AllocateAddressInput{})
+	if err != nil {
+		log.Printf("failed to allocate an elastic ip, please assign public ip manually, %v", err)
+	}
+	return ip.AllocationId
+}
+
+func getInfrastrcture(c *client.Clientset) v1.Infrastructure {
 	infra, err := c.ConfigV1().Infrastructures().List(metav1.ListOptions{})
 	if err != nil || infra == nil || len(infra.Items) != 1 { // we should only have 1 infrastructure
 		log.Fatalf("Error getting infrastructure, %v", err)
@@ -115,7 +171,7 @@ func GetInfrastrcture(c *client.Clientset) v1.Infrastructure {
 	return infra.Items[0]
 }
 
-func GetVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, error) {
+func getVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, error) {
 	res, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{
 			{
@@ -137,6 +193,15 @@ func GetVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, erro
 	} else if len(res.Vpcs) > 1 {
 		log.Panicf("More than one VPCs are found, we returned the first one")
 	}
+	//vpcAttri, err := svc.DescribeVpcAttribute(&ec2.DescribeVpcAttributeInput{
+	//	Attribute:aws.String(ec2.VpcAttributeNameEnableDnsSupport),
+	//	VpcId: res.Vpcs[0].VpcId,
+	//})
+	//if err != nil {
+	//	log.Printf("failed to find vpc attribute, no public DNS assigned, %v", err)
+	//}
+	//vpcAttri.SetEnableDnsHostnames(&ec2.AttributeBooleanValue{Value: aws.Bool(true)})
+	//vpcAttri.SetEnableDnsSupport(&ec2.AttributeBooleanValue{Value: aws.Bool(true)})
 	return *res.Vpcs[0].VpcId, err
 }
 
@@ -148,14 +213,10 @@ func getPubSubnetOrCreate(svc *ec2.EC2, vpcID, infraID string) (string, error) {
 				Name:   aws.String("vpc-id"),
 				Values: aws.StringSlice([]string{vpcID}), // grab subnet owned by the vpcID
 			},
-			//{
-			//	Name:   aws.String("cidr-block"),
-			//	Values: aws.StringSlice([]string{"10.0.0.0/16"}),
-			//},
 		},
 	})
 	if err != nil {
-		log.Println("failed to search subnet based on given VpcID: %v, %v, will create one instead", vpcID, err)
+		log.Printf("failed to search subnet based on given VpcID: %v, %v, will create one instead", vpcID, err)
 		// create a subnet based on vpcID
 		subnet, err := svc.CreateSubnet(&ec2.CreateSubnetInput{ // create subnet under the vpc (most likely not used since openshift-installer creates 6+ of them)
 			CidrBlock: aws.String("10.0.0.0/16"),
@@ -200,12 +261,12 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 
 func getIAMrole(svcIAM *iam.IAM, infraID, clusterFunction string) *ec2.IamInstanceProfileSpecification {
 	iamspc, err := svcIAM.GetInstanceProfile(&iam.GetInstanceProfileInput{
-		InstanceProfileName: aws.String(fmt.Sprintf("%s-%s-profile",infraID,clusterFunction)),
+		InstanceProfileName: aws.String(fmt.Sprintf("%s-%s-profile", infraID, clusterFunction)),
 	})
 	if err != nil {
 		log.Panicf("failed to find iam role, please attache manually %v", err)
 	}
 	return &ec2.IamInstanceProfileSpecification{
-		Name: iamspc.InstanceProfile.InstanceProfileName,
+		Arn: iamspc.InstanceProfile.Arn,
 	}
 }
