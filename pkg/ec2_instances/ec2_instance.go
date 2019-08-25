@@ -2,6 +2,7 @@ package ec2_instances
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -9,26 +10,32 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	v1 "github.com/openshift/api/config/v1"
 	client "github.com/openshift/client-go/config/clientset/versioned"
+	"io/ioutil"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"log"
-	"strings"
-
 	"net/http"
+	"os"
+	"strings"
 )
 
-func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, instanceType, keyName string) {
+type Instances []InstanceInfo
+
+type InstanceInfo struct {
+	Instanceid string   `json:"Instanceid"`
+	SG         []SGInfo `json:"SG"`
+}
+
+type SGInfo struct {
+	Groupid   string `json:"Groupid"`
+	Groupname string `json:"Groupname"`
+}
+
+func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, instanceType, keyName, path *string) {
 	svc := ec2.New(sess, aws.NewConfig())
 	svcIAM := iam.New(sess, aws.NewConfig())
 	var sgID, instanceID *string
-	if imageId == "" {
-		imageId = "ami-04ca2d0801450d495" // Default using Aravindh's firewall disabled image ami-0943eb2c39917fc11 (Does not always have firewall disabled) AWS windows server 2019 is ami-04ca2d0801450d495
-	}
-	if instanceType == "" {
-		instanceType = "m4.large"
-	}
-	if keyName == "" {
-		keyName = "libra" // use libra.pem
-	}
+	var createdInst InstanceInfo
+	var createdSG SGInfo
 	// get infrastructure from OC using kubeconfig info
 	infra := getInfrastrcture(clientset)
 	// get infraID an unique readable id for the infrastructure
@@ -41,11 +48,11 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 	// get openshift cluster worker security groupID
 	workerSG := getClusterSGID(svc, infraID, "worker")
 	// get openshift cluster worker iam profile
-	iamprofile := getIAMrole(svcIAM, infraID, "worker") // unnecessary, could just rely on naming convention to set the iam specifics
+	iamProfile := getIAMrole(svcIAM, infraID, "worker") // unnecessary, could just rely on naming convention to set the iam specifics
 	// get or create a public subnet under the vpcID
 	subnetID, err := getPubSubnetOrCreate(svc, vpcID, infraID)
 	sg, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String(infraID + "-winc-sg"),
+		GroupName:   aws.String(infraID + "-winc-SG"),
 		Description: aws.String("security group for rdp and all traffic"),
 		VpcId:       aws.String(vpcID),
 	})
@@ -59,48 +66,42 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 				},
 				{
 					Name:   aws.String("group-name"),
-					Values: aws.StringSlice([]string{infraID + "-winc-sg"}),
+					Values: aws.StringSlice([]string{infraID + "-winc-SG"}),
 				},
 			},
 		})
 		if err != nil || sgs == nil || len(sgs.SecurityGroups) == 0 {
-			log.Fatalf("failed to crate or find security group, %v", err)
+			log.Fatalf("failed to create or find security group, %v", err)
 		}
 		sgID = sgs.SecurityGroups[0].GroupId
 	} else {
 		sgID = sg.GroupId
+		// we only delete security group that is created with the instance. If it is reused, we will not log or delete SG when removing instances that are borrowing the SG.
+		createdSG = SGInfo{
+			Groupname: infraID + "-winc-SG",
+			Groupid:   *sgID,
+		}
 	}
 	// Specify the details of the instance
 	runResult, err := svc.RunInstances(&ec2.RunInstancesInput{
-		ImageId:            aws.String(imageId),
-		InstanceType:       aws.String(instanceType),
-		KeyName:            aws.String(keyName),
+		ImageId:            imageId,
+		InstanceType:       instanceType,
+		KeyName:            keyName,
 		SubnetId:           aws.String(subnetID),
 		MinCount:           aws.Int64(1),
 		MaxCount:           aws.Int64(1),
-		IamInstanceProfile: iamprofile,
-
-		SecurityGroupIds: []*string{sgID, aws.String(workerSG)},
+		IamInstanceProfile: iamProfile,
+		SecurityGroupIds:   []*string{sgID, aws.String(workerSG)},
 	})
 	if err != nil {
 		log.Fatalf("Could not create instance: %v", err)
 	} else {
 		instanceID = runResult.Instances[0].InstanceId
+		createdInst = InstanceInfo{
+			Instanceid: *instanceID,
+			SG:         []SGInfo{createdSG},
+		}
 		log.Println("Created instance", *instanceID)
-	}
-	ipID := allocatePublicIp(svc)
-	err = svc.WaitUntilInstanceStatusOk(&ec2.DescribeInstanceStatusInput{
-		InstanceIds: []*string{instanceID},
-	})
-	if err != nil {
-		log.Printf("failed to wait for instance to be ok, %v", err)
-	}
-	_, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
-		AllocationId: ipID,
-		InstanceId:   instanceID,
-	})
-	if err != nil {
-		log.Printf("failed to associate public ip for instance, %v", err)
 	}
 	_, err = svc.AuthorizeSecurityGroupIngress(&ec2.AuthorizeSecurityGroupIngressInput{
 		GroupId: sgID,
@@ -138,7 +139,101 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 		log.Println("Could not create tags for instance", runResult.Instances[0].InstanceId, err)
 		return
 	}
-	log.Println("Successfully created windows node instance")
+	ipRes, err := allocatePublicIp(svc)
+	if err != nil {
+		log.Printf("error allocating public ip to associate with instance, please manually allocate public ip, %v", err)
+	} else {
+		err = svc.WaitUntilInstanceStatusOk(&ec2.DescribeInstanceStatusInput{
+			InstanceIds: []*string{instanceID},
+		})
+		if err != nil {
+			log.Printf("failed to wait for instance to be ok, %v", err)
+		}
+		_, err = svc.AssociateAddress(&ec2.AssociateAddressInput{
+			AllocationId: ipRes.AllocationId,
+			InstanceId:   instanceID,
+		})
+		if err != nil {
+			log.Printf("failed to associate public ip for instance, %v", err)
+		}
+	}
+	err = writeInstanceInfo(&Instances{createdInst}, path)
+	if err != nil {
+		log.Panicf("failed to write instance info to file at '%v', instance will not be able to be deleted, %v", *path, err)
+	}
+	log.Println("Successfully created windows node instance, please RDP into windows with the following:")
+	log.Printf("xfreerdp /u:Administrator /v:%v  /h:1080 /w:1920 /p:'Secret2018'", *ipRes.PublicIp)
+}
+
+func DestroyEC2WinC(sess *session.Session, path *string) {
+	svc := ec2.New(sess, aws.NewConfig())
+	instances, err := readInstanceInfo(path)
+	log.Printf("consuming file '%v'", *path)
+	if err != nil {
+		log.Fatal("failed to read file from '%v', instance not deleted, %v", *path, err)
+	}
+	for _, inst := range *instances {
+		for _, sg := range inst.SG {
+			err = deleteSG(svc, sg.Groupid, sg.Groupname)
+			if err != nil {
+				log.Printf("failed to delete security group: %v, %v", sg.Groupname, err)
+			}
+		}
+		err = deleteInstance(svc, inst.Instanceid)
+		if err != nil {
+			log.Printf("failed to delete instance '%v', %v", inst.Instanceid, err)
+		}
+	}
+
+}
+
+func deleteSG(svc *ec2.EC2, groupid, groupname string) error {
+	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
+		GroupId:   aws.String(groupid),
+		GroupName: aws.String(groupname),
+	})
+	return err
+}
+
+func deleteInstance(svc *ec2.EC2, instanceID string) error {
+	_, err := svc.TerminateInstances(&ec2.TerminateInstancesInput{
+		InstanceIds: aws.StringSlice([]string{instanceID}),
+	})
+	return err
+}
+
+func writeInstanceInfo(info *Instances, path *string) error {
+	pastinfo, err := readInstanceInfo(path)
+	if err == nil {
+		for _, past := range *pastinfo {
+			*info = append(*info, past)
+		}
+	}
+	newinfo, err := json.Marshal(*info)
+	if err != nil {
+		return fmt.Errorf("failed to marshal information into json format, %v", err)
+	}
+	err = ioutil.WriteFile(*path, newinfo, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to write instance info to file, deletion will have to be manual, %v", err)
+	}
+	return nil
+}
+
+func readInstanceInfo(path *string) (*Instances, error) {
+	if _, err := os.Stat(*path); os.IsNotExist(err) {
+		return nil, fmt.Errorf("no InstanceInfo found at path '%v", *path)
+	}
+	var info Instances
+	content, err := ioutil.ReadFile(*path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file at path '%v', %v", *path, err)
+	}
+	err = json.Unmarshal(content, &info)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read json file at path '%v'", err)
+	}
+	return &info, nil
 }
 
 func getMyIp() string {
@@ -155,12 +250,12 @@ func getMyIp() string {
 	return buf.String()
 }
 
-func allocatePublicIp(svc *ec2.EC2) *string {
+func allocatePublicIp(svc *ec2.EC2) (*ec2.AllocateAddressOutput, error) {
 	ip, err := svc.AllocateAddress(&ec2.AllocateAddressInput{})
 	if err != nil {
-		log.Printf("failed to allocate an elastic ip, please assign public ip manually, %v", err)
+		return nil, fmt.Errorf("failed to allocate an elastic ip, please assign public ip manually, %v", err)
 	}
-	return ip.AllocationId
+	return ip, nil
 }
 
 func getInfrastrcture(c *client.Clientset) v1.Infrastructure {
@@ -242,7 +337,7 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 		Filters: []*ec2.Filter{
 			{
 				Name:   aws.String("tag:Name"),
-				Values: aws.StringSlice([]string{infraID + "-" + clusterFunction + "-sg"}),
+				Values: aws.StringSlice([]string{infraID + "-" + clusterFunction + "-SG"}),
 			},
 			{
 				Name:   aws.String("tag:kubernetes.io/cluster/" + infraID),
@@ -253,8 +348,9 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 	if err != nil {
 		log.Panicf("Failed to attach security group of openshift cluster worker, please manually add it, %v", err)
 	}
-	if sg == nil || len(sg.SecurityGroups) > 1 {
-		log.Panicf("nil or more than one security groups are found for the openshift cluster %v nodes, this should not happen, we attached the first one.", clusterFunction)
+	if sg == nil || len(sg.SecurityGroups) != 1 {
+		log.Printf("nil or more than one security groups are found for the openshift cluster %v nodes, please add openshift cluster %v SG manually", clusterFunction,clusterFunction)
+			return ""
 	}
 	return *sg.SecurityGroups[0].GroupId
 }

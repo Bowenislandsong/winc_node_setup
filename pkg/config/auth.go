@@ -1,7 +1,6 @@
 package config
 
 import (
-	"flag"
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/credentials"
@@ -13,13 +12,12 @@ import (
 	"os"
 )
 
-func AWSConfigSess() *session.Session {
+func AWSConfigSess(credPath, credAccount, region *string) *session.Session {
 	// Grab settings from flag values
-	// TODO: Default values may contain redhat information (consider removing default values before public facing)
-	credPath := flag.String("awsconfig", os.Getenv("HOME")+"/.aws/credentials", "Get absolute path of aws credentials")
-	credAccount := flag.String("account", "openshift-dev", "Get the account name of the aws credentials") // Default accounts for dev team in OpenShift
-	region := flag.String("region", "us-east-1", "Set region where the instance will be running on aws")  // Default region for Boston Office or East Coast (virginia)
-
+	// TODO: Default values gear towards RedHat Boston Office (consider removing default values before public facing)
+	if _, err := os.Stat(*credPath); os.IsNotExist(err) {
+		log.Fatalf("failed to find AWS credentials from path '%v'", *credPath)
+	}
 	sess := session.Must(session.NewSession(&aws.Config{
 		Credentials: credentials.NewSharedCredentials(*credPath, *credAccount),
 		Region:      aws.String(*region),
@@ -27,17 +25,12 @@ func AWSConfigSess() *session.Session {
 	return sess
 }
 
-// get aws instance id
-
-// TODO: consult https://github.com/openshift/cluster-kube-scheduler-operator/blob/master/pkg/operator/configobservation/configobservercontroller/observe_config_controller.go#L49 using informer
 // Return openshift Client
-func OpenShiftConfig() (*client.Clientset, error) {
-	kubeConfig := flag.String("kubeconfig", os.Getenv("HOME")+"/.kube/kubeconfig", "absolute path to the kubeconfig file")
-	flag.Parse()
-	log.Println("kubeconfig source: ", *kubeConfig)
-	c, err := clientcmd.BuildConfigFromFlags("", *kubeConfig)
+func OpenShiftConfig(kubeConfigPath *string) (*client.Clientset, error) {
+	log.Println("kubeconfig source: ", *kubeConfigPath)
+	c, err := clientcmd.BuildConfigFromFlags("", *kubeConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read from kubeconfig, %v", err)
+		return nil, fmt.Errorf("failed to read kubeconfig from path '%v', %v", *kubeConfigPath, err)
 	}
 	ocClient, err := client.NewForConfig(c)
 	if err != nil {
