@@ -52,7 +52,7 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 	// get or create a public subnet under the vpcID
 	subnetID, err := getPubSubnetOrCreate(svc, vpcID, infraID)
 	sg, err := svc.CreateSecurityGroup(&ec2.CreateSecurityGroupInput{
-		GroupName:   aws.String(infraID + "-winc-SG"),
+		GroupName:   aws.String(infraID + "-winc-sg"),
 		Description: aws.String("security group for rdp and all traffic"),
 		VpcId:       aws.String(vpcID),
 	})
@@ -66,7 +66,7 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 				},
 				{
 					Name:   aws.String("group-name"),
-					Values: aws.StringSlice([]string{infraID + "-winc-SG"}),
+					Values: aws.StringSlice([]string{infraID + "-winc-sg"}),
 				},
 			},
 		})
@@ -78,7 +78,7 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 		sgID = sg.GroupId
 		// we only delete security group that is created with the instance. If it is reused, we will not log or delete SG when removing instances that are borrowing the SG.
 		createdSG = SGInfo{
-			Groupname: infraID + "-winc-SG",
+			Groupname: infraID + "-winc-sg",
 			Groupid:   *sgID,
 		}
 	}
@@ -174,7 +174,10 @@ func DestroyEC2WinC(sess *session.Session, path *string) {
 	}
 	for _, inst := range *instances {
 		for _, sg := range inst.SG {
-			err = deleteSG(svc, sg.Groupid, sg.Groupname)
+			if sg.Groupid == "" {
+				continue
+			}
+			err = deleteSG(svc, sg.Groupid)
 			if err != nil {
 				log.Printf("failed to delete security group: %v, %v", sg.Groupname, err)
 			}
@@ -184,13 +187,19 @@ func DestroyEC2WinC(sess *session.Session, path *string) {
 			log.Printf("failed to delete instance '%v', %v", inst.Instanceid, err)
 		}
 	}
-
+	if err == nil {
+		err = os.Remove(*path)
+		if err != nil {
+			log.Printf("failed to delete file at '%v'", err)
+		}
+	} else {
+		log.Printf("file '%v' not deleted due to deletion error, %v", *path, err)
+	}
 }
 
-func deleteSG(svc *ec2.EC2, groupid, groupname string) error {
+func deleteSG(svc *ec2.EC2, groupid string) error {
 	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
-		GroupId:   aws.String(groupid),
-		GroupName: aws.String(groupname),
+		GroupId: aws.String(groupid),
 	})
 	return err
 }
@@ -337,7 +346,7 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 		Filters: []*ec2.Filter{
 			{
 				Name:   aws.String("tag:Name"),
-				Values: aws.StringSlice([]string{infraID + "-" + clusterFunction + "-SG"}),
+				Values: aws.StringSlice([]string{infraID + "-" + clusterFunction + "-sg"}),
 			},
 			{
 				Name:   aws.String("tag:kubernetes.io/cluster/" + infraID),
@@ -349,8 +358,8 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 		log.Panicf("Failed to attach security group of openshift cluster worker, please manually add it, %v", err)
 	}
 	if sg == nil || len(sg.SecurityGroups) != 1 {
-		log.Printf("nil or more than one security groups are found for the openshift cluster %v nodes, please add openshift cluster %v SG manually", clusterFunction,clusterFunction)
-			return ""
+		log.Panicf("nil or more than one security groups are found for the openshift cluster %v nodes, please add openshift cluster %v SG manually", clusterFunction, clusterFunction)
+		return ""
 	}
 	return *sg.SecurityGroups[0].GroupId
 }
