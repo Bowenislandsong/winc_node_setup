@@ -30,6 +30,13 @@ type SGInfo struct {
 	Groupname string `json:"Groupname"`
 }
 
+// CreateEC2WinC creates an Windows node instance based on a given AWS session and kubeconfig of an existing openshift cluster under the same VPC
+// attaches existing openshift cluster worker security group and IAM
+// uses public subnet, attaches public ip, and creates or attaches security group that allows all traffic 10.0.0.0/16 and RDP from my IP
+// uses given image id, instance type, and keyname
+// creates Name tag for the instance using the same prefix as the openshift cluster name
+// writes id and security group information of an created instance
+// provides RDP information in commandline
 func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, instanceType, keyName, path *string) {
 	svc := ec2.New(sess, aws.NewConfig())
 	svcIAM := iam.New(sess, aws.NewConfig())
@@ -165,6 +172,7 @@ func CreateEC2WinC(sess *session.Session, clientset *client.Clientset, imageId, 
 	log.Printf("xfreerdp /u:Administrator /v:%v  /h:1080 /w:1920 /p:'Secret2018'", *ipRes.PublicIp)
 }
 
+// DestroyEC2WinC destroys instances and security groups on AWS specified in file from the path and consume the file if succeeded
 func DestroyEC2WinC(sess *session.Session, path *string) {
 	svc := ec2.New(sess, aws.NewConfig())
 	instances, err := readInstanceInfo(path)
@@ -197,6 +205,8 @@ func DestroyEC2WinC(sess *session.Session, path *string) {
 	}
 }
 
+// deleteSG will delete security group based on group id
+// return error if deletion fails
 func deleteSG(svc *ec2.EC2, groupid string) error {
 	_, err := svc.DeleteSecurityGroup(&ec2.DeleteSecurityGroupInput{
 		GroupId: aws.String(groupid),
@@ -204,6 +214,8 @@ func deleteSG(svc *ec2.EC2, groupid string) error {
 	return err
 }
 
+// deleteInstance will delete an AWS instance based on instance id
+// return error if deletion fails
 func deleteInstance(svc *ec2.EC2, instanceID string) error {
 	_, err := svc.TerminateInstances(&ec2.TerminateInstancesInput{
 		InstanceIds: aws.StringSlice([]string{instanceID}),
@@ -211,6 +223,8 @@ func deleteInstance(svc *ec2.EC2, instanceID string) error {
 	return err
 }
 
+// writeInstanceInfo logs details of an created instance and append to a json file about instance id and attached security group
+// return error if file write fails
 func writeInstanceInfo(info *Instances, path *string) error {
 	pastinfo, err := readInstanceInfo(path)
 	if err == nil {
@@ -229,6 +243,8 @@ func writeInstanceInfo(info *Instances, path *string) error {
 	return nil
 }
 
+// readInstanceInfo reads from a json file about instance id and attached security group
+// return instance information including instance id, instance attached security group id and name, and error if fails
 func readInstanceInfo(path *string) (*Instances, error) {
 	if _, err := os.Stat(*path); os.IsNotExist(err) {
 		return nil, fmt.Errorf("no InstanceInfo found at path '%v", *path)
@@ -245,8 +261,11 @@ func readInstanceInfo(path *string) (*Instances, error) {
 	return &info, nil
 }
 
+// getMyIp get the external IP of current machine from http://myexternalip.com
+// TODO: Find a more reliable strategy than relying on a website
+// returns external IP
 func getMyIp() string {
-	resp, err := http.Get("http://myexternalip.com/raw") //TODO: we need a more reliable strategy
+	resp, err := http.Get("http://myexternalip.com/raw")
 	if err != nil {
 		log.Panic("Failed to get external IP Addr")
 	}
@@ -259,6 +278,8 @@ func getMyIp() string {
 	return buf.String()
 }
 
+// allocatePublicIp find a randomly assigned ip by AWS that is available
+// returns public ip related information and error messages if any
 func allocatePublicIp(svc *ec2.EC2) (*ec2.AllocateAddressOutput, error) {
 	ip, err := svc.AllocateAddress(&ec2.AllocateAddressInput{})
 	if err != nil {
@@ -267,6 +288,8 @@ func allocatePublicIp(svc *ec2.EC2) (*ec2.AllocateAddressOutput, error) {
 	return ip, nil
 }
 
+// getInfrastrcture gets information of current Infrastrcture refferred by the openshift client, each client should have only one infrastructure
+// returns information of the infrastructure including infraID/InfrastructureName
 func getInfrastrcture(c *client.Clientset) v1.Infrastructure {
 	infra, err := c.ConfigV1().Infrastructures().List(metav1.ListOptions{})
 	if err != nil || infra == nil || len(infra.Items) != 1 { // we should only have 1 infrastructure
@@ -275,6 +298,8 @@ func getInfrastrcture(c *client.Clientset) v1.Infrastructure {
 	return infra.Items[0]
 }
 
+// getVPCByInfrastructure gets VPC of the infrastructure.
+// returns VPC id and error messages
 func getVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, error) {
 	res, err := svc.DescribeVpcs(&ec2.DescribeVpcsInput{
 		Filters: []*ec2.Filter{
@@ -309,6 +334,8 @@ func getVPCByInfrastructure(svc *ec2.EC2, infra v1.Infrastructure) (string, erro
 	return *res.Vpcs[0].VpcId, err
 }
 
+// getPubSubnetOrCreate gets the public subnet under a given vpc id. If no subnet is available, then it creates one.
+// returns subent id and error messages
 func getPubSubnetOrCreate(svc *ec2.EC2, vpcID, infraID string) (string, error) {
 	// search subnet by the vpcid
 	subnets, err := svc.DescribeSubnets(&ec2.DescribeSubnetsInput{
@@ -341,6 +368,8 @@ func getPubSubnetOrCreate(svc *ec2.EC2, vpcID, infraID string) (string, error) {
 	return "", fmt.Errorf("failed to find public subnet in vpc: %v", vpcID)
 }
 
+// getClusterSGID gets security group id from an existing cluster either 'worker' or 'master'
+// returns security group id
 func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 	sg, err := svc.DescribeSecurityGroups(&ec2.DescribeSecurityGroupsInput{
 		Filters: []*ec2.Filter{
@@ -364,6 +393,8 @@ func getClusterSGID(svc *ec2.EC2, infraID, clusterFunction string) string {
 	return *sg.SecurityGroups[0].GroupId
 }
 
+// getIAMrole gets IAM information from an existing cluster either 'worker' or 'master'
+// returns IAM information including IAM arn
 func getIAMrole(svcIAM *iam.IAM, infraID, clusterFunction string) *ec2.IamInstanceProfileSpecification {
 	iamspc, err := svcIAM.GetInstanceProfile(&iam.GetInstanceProfileInput{
 		InstanceProfileName: aws.String(fmt.Sprintf("%s-%s-profile", infraID, clusterFunction)),

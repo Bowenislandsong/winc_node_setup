@@ -12,6 +12,8 @@ import (
 	"os"
 )
 
+// AWSConfigSess uses AWS credentials to create a session for interacting with AWS EC2
+// returns an AWS session
 func AWSConfigSess(credPath, credAccount, region *string) *session.Session {
 	// Grab settings from flag values
 	// TODO: Default values gear towards RedHat Boston Office (consider removing default values before public facing)
@@ -25,6 +27,7 @@ func AWSConfigSess(credPath, credAccount, region *string) *session.Session {
 	return sess
 }
 
+// OpenShiftConfig uses kubeconfig to create a client for existing openshift cluster
 // Return openshift Client
 func OpenShiftConfig(kubeConfigPath *string) (*client.Clientset, error) {
 	log.Println("kubeconfig source: ", *kubeConfigPath)
